@@ -140,6 +140,20 @@ describe("auth", () => {
 		assert.equal(r.body.error.code, "bad_origin");
 	});
 
+	it("accepts the console's public origin via a trusted proxy, and still blocks other sites", async () => {
+		const forwarded = { "x-forwarded-proto": "https", "x-forwarded-host": "owner.example.test" };
+		const viaConsole = new Agent("https://owner.example.test");
+		const ok = await viaConsole.req("POST", "/v1/admin/auth/login", { email: "admin@platform.demo", password: "wrong" }, forwarded);
+		assert.equal(ok.status, 401, "passed the origin check, then failed on the password");
+		const evil = new Agent("https://evil.example");
+		const blocked = await evil.req("POST", "/v1/admin/auth/login", { email: "admin@platform.demo", password: "wrong" }, forwarded);
+		assert.equal(blocked.status, 403);
+		assert.match(blocked.body.error.message, /came from https:\/\/evil\.example/);
+		assert.match(blocked.body.error.message, /CONSOLE_ORIGIN is http:\/\/localhost:3100/);
+		const slash = new Agent(`${config.consoleOrigin}/`);
+		assert.equal((await slash.post("/v1/admin/auth/login", { email: "admin@platform.demo", password: "wrong" })).status, 401, "trailing slash ignored");
+	});
+
 	it("with TWO_FACTOR off: no codes, no forced setup, 2FA routes gone", async () => {
 		const owner = await signIn("admin@platform.demo");
 		await setSettings(owner, (s) => (s.security.enforce2fa = true));

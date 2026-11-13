@@ -19,7 +19,8 @@
     "setup": "tsx src/scripts/create-owner.ts",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "setup:prod": "node build/scripts/create-owner.js"
+    "setup:prod": "node build/scripts/create-owner.js",
+    "add:rentbuddyz": "node build/scripts/add-rentbuddyz.js"
   },
   "engines": {
     "node": ">=20"

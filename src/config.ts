@@ -17,8 +17,8 @@ export const config = {
 	env: process.env.NODE_ENV ?? "development",
 	isProd: process.env.NODE_ENV === "production",
 	port: int(process.env.PORT, 4100),
-	consoleOrigin: process.env.CONSOLE_ORIGIN ?? "http://localhost:3100",
-	consoleUrl: (process.env.CONSOLE_URL ?? "http://localhost:3100").replace(/\/$/, ""),
+	consoleOrigin: (process.env.CONSOLE_ORIGIN ?? "http://localhost:3100").trim().replace(/\/+$/, ""),
+	consoleUrl: (process.env.CONSOLE_URL ?? "http://localhost:3100").trim().replace(/\/+$/, ""),
 	trustProxy: trustProxy(process.env.TRUST_PROXY),
 	webhookSecret: process.env.WEBHOOK_SECRET ?? "",
 	smtpUrl: process.env.SMTP_URL ?? "",
@@ -38,4 +38,17 @@ export const config = {
 
 if (config.isProd && Buffer.from(config.secretsKey, "base64").length !== 32) {
 	throw new Error("SECRETS_KEY must be 32 random bytes, base64-encoded");
+}
+
+// Without these the console can't sign in or save anything (origin check), and
+// invite links point at localhost — so refuse to start rather than half-work.
+if (config.isProd) {
+	for (const [name, value] of [
+		["CONSOLE_ORIGIN", process.env.CONSOLE_ORIGIN],
+		["CONSOLE_URL", process.env.CONSOLE_URL],
+	] as const) {
+		if (!value || !/^https:\/\/[^/\s]+\/?$/.test(value.trim())) {
+			throw new Error(`${name} must be set to the console's https address, e.g. https://owner.unlockvelocity.in (got ${value ? `"${value}"` : "nothing"})`);
+		}
+	}
 }

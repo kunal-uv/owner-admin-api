@@ -21,9 +21,20 @@ import { sitesRouter } from "./routes/sites.js";
  */
 const sameOrigin: RequestHandler = (req, _res, next) => {
 	if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
-	const origin = req.get("origin");
-	if (origin && origin !== config.consoleOrigin && origin !== `${req.protocol}://${req.get("host")}`) {
-		throw new HttpError(403, "bad_origin", "Requests must come from the owner console.");
+	const origin = req.get("origin")?.replace(/\/+$/, "");
+	if (origin) {
+		// Accepted origins: the configured console, and the public address of
+		// whatever proxy forwarded this request to us (Traefik → console → here,
+		// via X-Forwarded-Proto/Host — only honoured from TRUST_PROXY hops). A
+		// browser on another site always sends its own Origin, so it never matches.
+		const allowed = new Set([config.consoleOrigin, `${req.protocol}://${req.get("host")}`, `${req.protocol}://${req.host}`]);
+		if (!allowed.has(origin)) {
+			throw new HttpError(
+				403,
+				"bad_origin",
+				`Requests must come from the owner console. This one came from ${origin}, but the API's CONSOLE_ORIGIN is ${config.consoleOrigin} — set CONSOLE_ORIGIN to exactly ${origin} if that is your console.`,
+			);
+		}
 	}
 	const upload = req.path.endsWith("/site/upload") && req.is("multipart/form-data");
 	if (req.headers["content-length"] && req.headers["content-length"] !== "0" && !req.is("application/json") && !upload) {
