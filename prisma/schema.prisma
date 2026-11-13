@@ -1,0 +1,336 @@
+// Control-plane database for the owner admin.
+// Money is stored in integer cents; the API converts to decimal units at the edge.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id                    String   @id
+  key                   String   @unique
+  name                  String
+  tagline               String   @default("")
+  status                String // live | beta | coming_soon | retired
+  color                 String
+  adminHostPattern      String
+  storefrontHostPattern String
+  /// FeatureDef[]: { key, name, group, description?, core? }
+  features              Json
+  /// sha256 of the product's service key (used by the product's backend to call us)
+  serviceKeyHash        String?  @unique
+  serviceKeyHint        String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  plans   Plan[]
+  clients Client[]
+
+  @@map("products")
+}
+
+model Plan {
+  id                String   @id
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id])
+  name              String
+  code              String   @unique
+  description       String   @default("")
+  currency          String
+  priceMonthlyCents Int
+  priceYearlyCents  Int
+  trialDays         Int
+  /// Limits: { stores, staffUsers, products, ordersPerMonth, storageGb } (-1 = unlimited)
+  limits            Json
+  features          String[]
+  status            String // active | archived
+  isPublic          Boolean  @default(true)
+  highlighted       Boolean  @default(false)
+  sortOrder         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  clients Client[] @relation("ClientPlan")
+
+  @@index([productId])
+  @@map("plans")
+}
+
+model Client {
+  id                  String    @id
+  name                String
+  slug                String    @unique
+  productId           String
+  product             Product   @relation(fields: [productId], references: [id])
+  planId              String
+  plan                Plan      @relation("ClientPlan", fields: [planId], references: [id])
+  /// Scheduled downgrade / cycle change, applied at renewal.
+  pendingPlanId       String?
+  pendingBillingCycle String?
+  status              String // provisioning | trial | active | past_due | suspended | cancelled
+  billingCycle        String // monthly | yearly
+  contact             Json
+  company             Json
+  adminHost           String    @unique
+  featureOverrides    Json      @default("{}")
+  limitOverrides      Json      @default("{}")
+  discountPct         Float     @default(0)
+  usage               Json
+  usageReportedAt     DateTime?
+  trialEndsAt         DateTime?
+  currentPeriodStart  DateTime
+  currentPeriodEnd    DateTime
+  cancelAt            DateTime?
+  suspendedReason     String?
+  pastDueSince        DateTime?
+  health              Json
+  healthUrl           String?
+  /// Base URL of the client's product backend API, e.g. https://rent-buddy-api.example.com/api
+  apiBaseUrl          String?
+  /// The client backend's PLATFORM_API_KEY, encrypted with SECRETS_KEY (AES-256-GCM).
+  platformKeyEnc      String?
+  platformKeyHint     String?
+  tags                String[]
+  notes               String    @default("")
+  leadId              String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  storefronts Domain[]
+
+  @@index([status])
+  @@map("clients")
+}
+
+model Domain {
+  id         String   @id @default(cuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  host       String   @unique
+  verified   Boolean  @default(false)
+  primary    Boolean  @default(false)
+  sslStatus  String   @default("pending") // active | pending | failed
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([clientId])
+  @@map("domains")
+}
+
+model Lead {
+  id         String   @id
+  name       String
+  company    String   @default("")
+  email      String
+  phone      String   @default("")
+  productId  String
+  planId     String?
+  source     String // website | referral | sales | event | partner
+  status     String // new | contacted | demo_scheduled | won | lost
+  message    String   @default("")
+  assigneeId String?
+  clientId   String?
+  lostReason String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([status])
+  @@map("leads")
+}
+
+/// Invoices outlive the client they were issued to, so clientId is not a foreign key.
+model Invoice {
+  id            String    @id
+  number        String    @unique
+  clientId      String
+  clientName    String
+  currency      String
+  /// InvoiceLine[]: { description, amountCents }
+  lines         Json
+  subtotalCents Int
+  discountCents Int
+  taxCents      Int
+  totalCents    Int
+  status        String // draft | open | paid | overdue | void
+  issuedAt      DateTime
+  dueAt         DateTime
+  paidAt        DateTime?
+  periodStart   DateTime
+  periodEnd     DateTime
+  createdAt     DateTime  @default(now())
+
+  @@index([clientId])
+  @@index([status])
+  @@map("invoices")
+}
+
+model Ticket {
+  id         String          @id
+  number     Int             @unique
+  clientId   String
+  subject    String
+  status     String // open | pending | resolved
+  priority   String // low | normal | high | urgent
+  assigneeId String?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @default(now())
+  messages   TicketMessage[]
+
+  @@index([clientId])
+  @@map("tickets")
+}
+
+model TicketMessage {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  at         DateTime @default(now())
+  author     String
+  fromClient Boolean
+  body       String
+
+  @@index([ticketId])
+  @@map("ticket_messages")
+}
+
+model Staff {
+  id               String    @id
+  name             String
+  email            String    @unique
+  role             String // owner | admin | billing | support | viewer
+  status           String // active | invited | disabled
+  passwordHash     String?
+  mfaEnabled       Boolean   @default(false)
+  mfaSecret        String?
+  mfaPendingSecret String?
+  lastActiveAt     DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  sessions StaffSession[]
+  tokens   StaffToken[]
+
+  @@map("staff")
+}
+
+model StaffSession {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  staffId    String
+  staff      Staff     @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  /// false until the TOTP step is passed (when the account has MFA enabled)
+  mfaPassed  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  lastSeenAt DateTime  @default(now())
+  ip         String?
+  userAgent  String?
+  revokedAt  DateTime?
+
+  @@index([staffId])
+  @@map("staff_sessions")
+}
+
+model StaffToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  staffId   String
+  staff     Staff     @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  purpose   String // invite | reset
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("staff_tokens")
+}
+
+model ImpersonationToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  staffId   String
+  staffName String
+  clientId  String
+  reason    String
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@map("impersonation_tokens")
+}
+
+/// Append-only. The app never updates or deletes rows here.
+model AuditEntry {
+  id         String   @id @default(cuid())
+  at         DateTime @default(now())
+  actorId    String
+  actorName  String
+  action     String
+  entityType String
+  entityId   String?
+  entityName String?
+  summary    String
+  reason     String?
+  ip         String?
+
+  @@index([at])
+  @@index([entityId])
+  @@map("audit_log")
+}
+
+/// Singleton documents: "settings" and "website".
+model Document {
+  key       String   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@map("documents")
+}
+
+model Counter {
+  name  String @id
+  value Int
+
+  @@map("counters")
+}
+
+model UsageSnapshot {
+  id       String   @id @default(cuid())
+  clientId String
+  takenAt  DateTime @default(now())
+  data     Json
+
+  @@index([clientId, takenAt])
+  @@map("usage_snapshots")
+}
+
+model WebhookDelivery {
+  id            String    @id @default(cuid())
+  event         String
+  url           String
+  payload       Json
+  status        String // pending | delivered | failed
+  attempts      Int       @default(0)
+  lastError     String?
+  nextAttemptAt DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  deliveredAt   DateTime?
+
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
+}
+
+model EmailOutbox {
+  id        String   @id @default(cuid())
+  to        String
+  subject   String
+  text      String
+  status    String // logged | sent | failed
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@map("email_outbox")
+}
